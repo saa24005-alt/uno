@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>タスク管理アプリ</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#4f46e5',
+                        primary_hover: '#4338ca',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* カスタムスクロールバーなど */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #c7c7cc; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a1a1aa; 
+        }
+        .task-enter {
+            animation: slideIn 0.3s ease-out forwards;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen font-sans">
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="fixed inset-0 bg-white/80 z-50 flex flex-col justify-center items-center backdrop-blur-sm transition-opacity duration-300">
+        <i class="fa-solid fa-circle-notch fa-spin text-4xl text-primary mb-4"></i>
+        <p class="text-gray-600 font-medium">データベースに接続中...</p>
+    </div>
+
+    <div class="max-w-2xl mx-auto px-4 py-8 md:py-12 relative">
+        <!-- Header -->
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-gray-900 flex justify-center items-center gap-3">
+                <i class="fa-solid fa-list-check text-primary"></i>
+                マイタスク
+            </h1>
+            <p class="text-gray-500 mt-2 text-sm" id="user-status">同期の準備中...</p>
+        </header>
+
+        <!-- Error Message Container -->
+        <div id="error-message" class="hidden mb-6 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow-sm" role="alert">
+            <p class="font-bold">エラーが発生しました</p>
+            <p id="error-text" class="text-sm"></p>
+        </div>
+
+        <!-- Task Input Form -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 mb-8">
+            <form id="task-form" class="flex gap-3">
+                <input 
+                    type="text" 
+                    id="task-input" 
+                    class="flex-1 bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-primary focus:border-primary block w-full p-3 transition-colors" 
+                    placeholder="新しいタスクを入力してください..." 
+                    required
+                    autocomplete="off"
+                >
+                <button 
+                    type="submit" 
+                    id="submit-btn"
+                    class="text-white bg-primary hover:bg-primary_hover focus:ring-4 focus:outline-none focus:ring-indigo-300 font-medium rounded-lg text-sm w-auto px-5 py-3 text-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                    <i class="fa-solid fa-plus"></i>
+                    <span class="hidden sm:inline">追加</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- Task List -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div class="p-4 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
+                <h2 class="font-semibold text-gray-700">タスク一覧</h2>
+                <span id="task-count" class="bg-gray-200 text-gray-600 text-xs font-medium px-2.5 py-0.5 rounded-full">0</span>
+            </div>
+            <ul id="task-list" class="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
+                <!-- Tasks will be injected here -->
+                <li id="empty-state" class="p-8 text-center text-gray-500">
+                    <i class="fa-regular fa-clipboard text-4xl mb-3 text-gray-300"></i>
+                    <p>タスクがありません。<br>上のフォームから追加してください。</p>
+                </li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Firebase SDK (ES Modules) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // === Firebase Configuration ===
+        // 提供された設定情報
+        const userFirebaseConfig = {
+            apiKey: "AIzaSyAUPB1uJT55FXEPFlWoFQc9CnM14ztEv-8",
+            authDomain: "task-8d11e.firebaseapp.com",
+            projectId: "task-8d11e",
+            storageBucket: "task-8d11e.firebasestorage.app",
+            messagingSenderId: "8799972376",
+            appId: "1:8799972376:web:f78a047cb4050b54cbe76d"
+        };
+
+        // 環境変数があればそれを使用し、なければ提供された設定を使用
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : userFirebaseConfig;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'task-8d11e';
+        
+        // Firebase初期化
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // State variables
+        let currentUser = null;
+        let unsubscribeTasks = null;
+        let tasks = [];
+
+        // DOM Elements
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const errorMessage = document.getElementById('error-message');
+        const errorText = document.getElementById('error-text');
+        const taskForm = document.getElementById('task-form');
+        const taskInput = document.getElementById('task-input');
+        const submitBtn = document.getElementById('submit-btn');
+        const taskList = document.getElementById('task-list');
+        const taskCount = document.getElementById('task-count');
+        const emptyState = document.getElementById('empty-state');
+        const userStatus = document.getElementById('user-status');
+
+        // === Utility Functions ===
+        const generateId = () => {
+            // Firestore互換のランダムなID生成（簡易版）
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let autoId = '';
+            for (let i = 0; i < 20; i++) {
+                autoId += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return autoId;
+        };
+
+        const showError = (message) => {
+            errorText.textContent = message;
+            errorMessage.classList.remove('hidden');
+            setTimeout(() => {
+                errorMessage.classList.add('hidden');
+            }, 5000); // 5秒後に消す
+        };
+
+        const hideLoading = () => {
+            loadingOverlay.style.opacity = '0';
+            setTimeout(() => {
+                loadingOverlay.classList.add('hidden');
+            }, 300);
+        };
+
+        // === Authentication ===
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth error:", error);
+                showError("認証に失敗しました。ページをリロードしてください。");
+            }
+        };
+
+        // === Database Operations ===
+        // タスクの購読（リアルタイム同期）
+        const loadTasks = () => {
+            if (!currentUser) return;
+
+            // コレクションパス: artifacts/{appId}/users/{userId}/tasks
+            const tasksRef = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'tasks');
+
+            // リアルタイムリスナーの設定
+            unsubscribeTasks = onSnapshot(tasksRef, (snapshot) => {
+                tasks = [];
+                snapshot.forEach((docSnap) => {
+                    tasks.push({ id: docSnap.id, ...docSnap.data() });
+                });
+
+                // クライアント側で作成日時順（降順）にソート
+                tasks.sort((a, b) => {
+                    const timeA = a.createdAt ? a.createdAt.toMillis() : Date.now();
+                    const timeB = b.createdAt ? b.createdAt.toMillis() : Date.now();
+                    return timeB - timeA;
+                });
+
+                renderTasks();
+            }, (error) => {
+                console.error("Fetch error:", error);
+                showError("データの読み込みに失敗しました。");
+            });
+        };
+
+        // タスクの追加
+        taskForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = taskInput.value.trim();
+            if (!text || !currentUser) return;
+
+            submitBtn.disabled = true;
+            taskInput.disabled = true;
+
+            try {
+                const taskId = generateId();
+                const taskRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'tasks', taskId);
+                
+                await setDoc(taskRef, {
+                    text: text,
+                    completed: false,
+                    createdAt: serverTimestamp()
+                });
+                
+                taskInput.value = '';
+            } catch (error) {
+                console.error("Add error:", error);
+                showError("タスクの追加に失敗しました。");
+            } finally {
+                submitBtn.disabled = false;
+                taskInput.disabled = false;
+                taskInput.focus();
+            }
+        });
+
+        // タスクの完了状態切り替え
+        window.toggleTask = async (taskId, currentStatus) => {
+            if (!currentUser) return;
+            try {
+                const taskRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'tasks', taskId);
+                await updateDoc(taskRef, {
+                    completed: !currentStatus
+                });
+            } catch (error) {
+                console.error("Update error:", error);
+                showError("状態の更新に失敗しました。");
+            }
+        };
+
+        // タスクの削除
+        window.deleteTask = async (taskId) => {
+            if (!currentUser) return;
+            // 削除確認の代わりに、UIで即座に消すか確認を入れるか
+            try {
+                const taskRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'tasks', taskId);
+                await deleteDoc(taskRef);
+            } catch (error) {
+                console.error("Delete error:", error);
+                showError("タスクの削除に失敗しました。");
+            }
+        };
+
+        // === UI Rendering ===
+        const escapeHTML = (str) => {
+            return str.replace(/[&<>'"]/g, 
+                tag => ({
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    "'": '&#39;',
+                    '"': '&quot;'
+                }[tag])
+            );
+        };
+
+        const renderTasks = () => {
+            taskCount.textContent = tasks.length;
+            
+            if (tasks.length === 0) {
+                taskList.innerHTML = '';
+                taskList.appendChild(emptyState);
+                emptyState.classList.remove('hidden');
+                return;
+            }
+
+            // 空状態メッセージを隠すため、innerHTMLをクリア
+            taskList.innerHTML = '';
+
+            tasks.forEach(task => {
+                const li = document.createElement('li');
+                li.className = 'flex items-center justify-between p-4 hover:bg-gray-50 transition-colors group task-enter';
+                
+                const safeText = escapeHTML(task.text);
+                const isCompleted = task.completed;
+                const textClass = isCompleted ? 'text-gray-400 line-through' : 'text-gray-700';
+                const checkClass = isCompleted ? 'text-green-500 bg-green-50 border-green-500' : 'text-transparent border-gray-300 hover:border-primary';
+                
+                li.innerHTML = `
+                    <div class="flex items-center gap-4 flex-1 overflow-hidden cursor-pointer" onclick="toggleTask('${task.id}', ${isCompleted})">
+                        <button class="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${checkClass}">
+                            <i class="fa-solid fa-check text-xs ${isCompleted ? 'opacity-100' : 'opacity-0'}"></i>
+                        </button>
+                        <span class="truncate transition-all duration-200 ${textClass}">
+                            ${safeText}
+                        </span>
+                    </div>
+                    <button 
+                        onclick="deleteTask('${task.id}')"
+                        class="flex-shrink-0 ml-4 text-gray-400 hover:text-red-500 p-2 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all focus:outline-none focus:ring-2 focus:ring-red-100"
+                        title="タスクを削除"
+                    >
+                        <i class="fa-regular fa-trash-can"></i>
+                    </button>
+                `;
+                taskList.appendChild(li);
+            });
+        };
+
+        // === Initialization ===
+        // 認証状態の監視
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                userStatus.textContent = "同期中 (オンライン)";
+                userStatus.classList.replace('text-gray-500', 'text-green-600');
+                hideLoading();
+                
+                // 前のリスナーがあれば解除
+                if (unsubscribeTasks) {
+                    unsubscribeTasks();
+                }
+                loadTasks();
+            } else {
+                currentUser = null;
+                userStatus.textContent = "オフライン";
+                userStatus.classList.replace('text-green-600', 'text-gray-500');
+            }
+        });
+
+        // 起動時に認証開始
+        initAuth();
+
+    </script>
+</body>
+</html>
